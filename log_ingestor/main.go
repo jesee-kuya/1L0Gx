@@ -51,3 +51,36 @@ func joinFloat32(slice []float32, sep string) string {
 	}
 	return str
 }
+
+// generateRandomLog creates a new LogEntry with randomized data.
+func generateRandomLog() LogEntry {
+	sources := []string{"Firewall", "Auth", "IDS", "System", "WebApp"}
+	severities := []string{"INFO", "WARNING", "ALERT", "CRITICAL"}
+	messages := map[string]string{
+		"Firewall": "Blocked suspicious traffic",
+		"Auth":     "Failed login attempt",
+		"IDS":      "Potential SQL injection detected",
+		"System":   "Service unexpectedly stopped",
+		"WebApp":   "Cross-site scripting attempt",
+		"CRITICAL": "Multiple brute-force attempts detected on account 'admin'",
+	}
+	ips := []string{"203.0.113.45", "198.51.100.2", "192.0.2.88", "203.0.113.101", "198.51.100.14"}
+
+	source := sources[rand.Intn(len(sources))]
+	severity := severities[rand.Intn(len(severities))]
+
+	var message string
+	if severity == "CRITICAL" && rand.Float32() > 0.5 {
+		message = messages["CRITICAL"]
+	} else {
+		message = messages[source]
+	}
+
+	return LogEntry{
+		Timestamp: time.Now(),
+		Source:    source,
+		Severity:  severity,
+		Message:   fmt.Sprintf("%s for user 'testuser'.", message),
+		IPAddress: ips[rand.Intn(len(ips))],
+	}
+}
