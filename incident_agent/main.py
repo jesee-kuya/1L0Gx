@@ -60,13 +60,13 @@ Logs:
 Task:
 1. Summarize the incident in 2 sentences.
 2. Assign a severity (LOW, MEDIUM, HIGH, CRITICAL).
-3. Suggest recommended actions like "Action: BLOCK_IP", "Action: SLACK_ALERT", "Action: CREATE_TICKET".
+3. Suggest recommended actions like \"Action: BLOCK_IP\", \"Action: SLACK_ALERT\", \"Action: CREATE_TICKET\".
 Return JSON only:
-{{"summary": "...", "severity": "...", "recommendation": "..."}}
+{{\"summary\": \"...\", \"severity\": \"...\", \"recommendation\": \"...\"}}
 """
 
     messages = [
-        {"role": "system", "content": "You are a helpful cybersecurity analyst. Always return valid JSON."},
+        {"role": "system", "content": "You are a helpful cybersecurity analyst. Always return valid JSON."}, 
         {"role": "user", "content": prompt},
     ]
 
@@ -95,3 +95,73 @@ Return JSON only:
     except Exception as e:
         logging.error(f"Error calling {provider} API: {e}")
         return None
+
+# --- Incident Processing ---
+def process_incidents(conn, config):
+    cursor = conn.cursor(dictionary=True)
+
+    # 1. Find new CRITICAL/ALERT logs
+    cursor.execute("""
+        SELECT id, timestamp, source, severity, message, ip_address
+        FROM logs
+        WHERE processed = FALSE AND severity IN ('CRITICAL','ALERT')
+        ORDER BY timestamp DESC
+        LIMIT 1
+    """)
+    trigger_log = cursor.fetchone()
+
+    if not trigger_log:
+        logging.info("No new critical/alert logs.")
+        cursor.close()
+        return
+
+    logging.info(f"🚨 Trigger log {trigger_log['id']}: {trigger_log['message']}")
+
+    # 2. Find related logs (same IP ±5 minutes)
+    cursor.execute("""
+        SELECT id, timestamp, source, severity, message, ip_address
+        FROM logs
+        WHERE ip_address = %s
+          AND timestamp BETWEEN %s - INTERVAL 5 MINUTE AND %s + INTERVAL 5 MINUTE
+    """, (trigger_log["ip_address"], trigger_log["timestamp"], trigger_log["timestamp"]))
+    related_logs = cursor.fetchall()
+    log_ids = [log["id"] for log in related_logs]
+
+    logging.info(f"📊 Found {len(related_logs)} related logs for IP {trigger_log['ip_address']}.")
+
+    # 3. Analyze with LLM
+    analysis = analyze_logs_with_llm(related_logs, config)
+    if not analysis:
+        cursor.close()
+        return
+
+    # Normalize recommendation: ensure it's always a string
+    recommendation = analysis.get("recommendation", "")
+    if isinstance(recommendation, list):
+        recommendation = "\n".join(recommendation)
+
+    try:
+        # 4. Save new incident
+        cursor.execute("""
+            INSERT INTO incidents (log_ids, summary, severity, recommendation, status)
+            VALUES (%s, %s, %s, %s, 'OPEN')
+        """, (json.dumps(log_ids), analysis["summary"], analysis["severity"], recommendation))
+        incident_id = cursor.lastrowid
+        conn.commit()
+        logging.info(f"📝 Incident {incident_id} created.")
+
+        # 5. Create & execute actions
+        process_actions(conn, incident_id, recommendation, trigger_log["ip_address"])
+
+        # 6. Mark logs as processed
+        if log_ids:
+            placeholders = ",".join(["%s"] * len(log_ids))
+            cursor.execute(f"UPDATE logs SET processed = TRUE WHERE id IN ({placeholders})", tuple(log_ids))
+            conn.commit()
+            logging.info(f"✅ {len(log_ids)} logs marked as processed.")
+
+    except Exception as e:
+        logging.error(f"Error saving incident: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
