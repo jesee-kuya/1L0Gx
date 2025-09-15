@@ -1,0 +1,13 @@
+# 1L0Gx Configuration
+
+tidb:
+  host: "gateway01.eu-central-1.prod.aws.tidbcloud.com"
+  port: 4000
+  user: "48my6JA2ujJdGUZ.root"
+  password: "2qNROfnjvaeZDEmv"
+  database: "test"
+
+llm:
+  provider: "groq"
+  api_key: "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"
+  model: "llama-3.1-8b-instant"
