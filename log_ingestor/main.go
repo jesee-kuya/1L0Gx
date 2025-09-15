@@ -31,3 +31,23 @@ type LogEntry struct {
 	Message   string
 	IPAddress string
 }
+
+// Generates a random vector embedding (mock).
+func generateMockEmbedding(dims int) string {
+	vec := make([]float32, dims)
+	for i := range vec {
+		vec[i] = rand.Float32()
+	}
+	return fmt.Sprintf("[%s]", joinFloat32(vec, ", "))
+}
+
+func joinFloat32(slice []float32, sep string) string {
+	str := ""
+	for i, v := range slice {
+		if i > 0 {
+			str += sep
+		}
+		str += fmt.Sprintf("%.6f", v)
+	}
+	return str
+}
