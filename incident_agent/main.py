@@ -66,7 +66,7 @@ Return JSON only:
 """
 
     messages = [
-        {"role": "system", "content": "You are a helpful cybersecurity analyst. Always return valid JSON."}, 
+        {"role": "system", "content": "You are a helpful cybersecurity analyst. Always return valid JSON."},
         {"role": "user", "content": prompt},
     ]
 
@@ -107,7 +107,7 @@ def process_incidents(conn, config):
         WHERE processed = FALSE AND severity IN ('CRITICAL','ALERT')
         ORDER BY timestamp DESC
         LIMIT 1
-    """)
+    """ )
     trigger_log = cursor.fetchone()
 
     if not trigger_log:
@@ -198,3 +198,22 @@ def process_actions(conn, incident_id, recommendation_text, ip_address):
                 logging.error(f"Failed to execute action {action_type}: {e}")
                 conn.rollback()
     cursor.close()
+
+# --- Main ---
+if __name__ == "__main__":
+    config = load_config()
+    conn = get_db_connection(config)
+    if not conn:
+        exit(1)
+
+    logging.info("🚀 1L0Gx Incident Agent running. Polling every 10s...")
+    try:
+        while True:
+            process_incidents(conn, config)
+            time.sleep(10)
+    except KeyboardInterrupt:
+        logging.info("👋 Agent stopped by user.")
+    finally:
+        if conn.is_connected():
+            conn.close()
+            logging.info("🔒 DB connection closed.")
