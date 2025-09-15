@@ -165,3 +165,36 @@ def process_incidents(conn, config):
         conn.rollback()
     finally:
         cursor.close()
+
+# --- Action Execution ---
+def process_actions(conn, incident_id, recommendation_text, ip_address):
+    cursor = conn.cursor()
+    for line in recommendation_text.splitlines():
+        if "Action:" in line:
+            action_type = line.split("Action:")[1].strip().split()[0]
+            details = {"ip": ip_address, "note": "Auto-response by 1L0Gx"}
+            try:
+                cursor.execute("""
+                    INSERT INTO actions (incident_id, action_type, details, status)
+                    VALUES (%s, %s, %s, 'PENDING')
+                """, (incident_id, action_type, json.dumps(details)))
+                action_id = cursor.lastrowid
+                conn.commit()
+                logging.info(f"⚡ Action {action_type} created (ID={action_id})")
+
+                # Simulate execution
+                logging.info(f"--- Executing {action_type} ---")
+                if action_type == "BLOCK_IP":
+                    logging.info(f"   -> Blocking {ip_address} in firewall (simulated).")
+                elif action_type == "SLACK_ALERT":
+                    logging.info("   -> Sending alert to Slack (simulated).")
+                elif action_type == "CREATE_TICKET":
+                    logging.info("   -> Creating Jira ticket (simulated).")
+
+                cursor.execute("UPDATE actions SET status='SUCCESS', executed_at=NOW() WHERE id=%s", (action_id,))
+                conn.commit()
+                logging.info(f"✅ Action {action_id} marked SUCCESS")
+            except Exception as e:
+                logging.error(f"Failed to execute action {action_type}: {e}")
+                conn.rollback()
+    cursor.close()
