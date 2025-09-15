@@ -33,3 +33,65 @@ def get_db_connection(config):
     except Exception as e:
         logging.error(f"Database connection failed: {e}")
         return None
+
+# --- LLM Analysis ---
+def analyze_logs_with_llm(logs, config):
+    provider = config["llm"]["provider"]
+    api_key = config["llm"]["api_key"]
+    model = config["llm"]["model"]
+
+    if not api_key or api_key.startswith("YOUR_"):
+        logging.warning("⚠️ No valid LLM API key found. Using mock response.")
+        return {
+            "summary": "Mock analysis due to missing LLM configuration.",
+            "severity": "MEDIUM",
+            "recommendation": "Action: BLOCK_IP\nAction: CREATE_TICKET"
+        }
+
+    log_str = "\n".join(
+        [f"[{log['timestamp']}] [{log['source']}] [{log['severity']}] {log['message']}" for log in logs]
+    )
+    prompt = f"""
+You are a cybersecurity analyst.
+
+Logs:
+{log_str}
+
+Task:
+1. Summarize the incident in 2 sentences.
+2. Assign a severity (LOW, MEDIUM, HIGH, CRITICAL).
+3. Suggest recommended actions like "Action: BLOCK_IP", "Action: SLACK_ALERT", "Action: CREATE_TICKET".
+Return JSON only:
+{{"summary": "...", "severity": "...", "recommendation": "..."}}
+"""
+
+    messages = [
+        {"role": "system", "content": "You are a helpful cybersecurity analyst. Always return valid JSON."},
+        {"role": "user", "content": prompt},
+    ]
+
+    try:
+        if provider == "openai":
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+        elif provider == "groq":
+            from groq import Groq
+            client = Groq(api_key=api_key)
+        else:
+            logging.error(f"Unsupported LLM provider: {provider}")
+            return None
+
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content.strip()
+        if content.startswith("```"):
+            content = content.strip("`").replace("json", "").strip()
+        analysis = json.loads(content)
+        logging.info(f"🤖 LLM ({provider}) returned: {analysis}")
+        return analysis
+    except Exception as e:
+        logging.error(f"Error calling {provider} API: {e}")
+        return None
