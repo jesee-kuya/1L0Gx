@@ -2,13 +2,17 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
+	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/gorilla/websocket"
 	"gopkg.in/yaml.v3"
 )
 
@@ -25,12 +29,22 @@ type Config struct {
 
 // LogEntry represents a single security log.
 type LogEntry struct {
-	Timestamp time.Time
-	Source    string
-	Severity  string
-	Message   string
-	IPAddress string
+	ID        int64     `json:"id,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
+	Source    string    `json:"source"`
+	Severity  string    `json:"severity"`
+	Message   string    `json:"message"`
+	IPAddress string    `json:"ip_address"`
 }
+
+// WebSocket hub for broadcasting logs
+var (
+	clients   = make(map[*websocket.Conn]bool)
+	clientsMu sync.Mutex
+	upgrader  = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true }, // allow all origins for hackathon
+	}
+)
 
 // Generates a random vector embedding (mock).
 func generateMockEmbedding(dims int) string {
@@ -85,6 +99,49 @@ func generateRandomLog() LogEntry {
 	}
 }
 
+// --- WebSocket Handlers ---
+func wsHandler(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println("⚠️ WebSocket upgrade failed:", err)
+		return
+	}
+	defer conn.Close()
+
+	clientsMu.Lock()
+	clients[conn] = true
+	clientsMu.Unlock()
+
+	log.Println("🔌 Client connected via WebSocket")
+
+	// Keep connection alive
+	for {
+		if _, _, err := conn.NextReader(); err != nil {
+			break
+		}
+	}
+
+	clientsMu.Lock()
+	delete(clients, conn)
+	clientsMu.Unlock()
+	log.Println("❌ Client disconnected")
+}
+
+func broadcastLog(entry LogEntry) {
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+
+	data, _ := json.Marshal(entry)
+	for conn := range clients {
+		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			log.Println("⚠️ Failed to send log to client:", err)
+			conn.Close()
+			delete(clients, conn)
+		}
+	}
+}
+
+// --- Main ---
 func main() {
 	log.Println("🚀 Starting 1L0Gx Log Ingestor...")
 
@@ -123,6 +180,15 @@ func main() {
 	}
 	log.Println("✅ Connected to TiDB Serverless.")
 
+	// Start WebSocket server
+	http.HandleFunc("/ws", wsHandler)
+	go func() {
+		log.Println("🌐 WebSocket server running on :8080/ws")
+		if err := http.ListenAndServe(":8080", nil); err != nil {
+			log.Fatalf("WebSocket server failed: %v", err)
+		}
+	}()
+
 	// Log generation loop
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -131,16 +197,21 @@ func main() {
 		entry := generateRandomLog()
 		embedding := generateMockEmbedding(768)
 
-		_, err := db.Exec(`
+		res, err := db.Exec(`
 			INSERT INTO logs (timestamp, source, severity, message, ip_address, embedding)
-			VALUES (?, ?, ?, ?, ?, ?)`, 
+			VALUES (?, ?, ?, ?, ?, ?)`,
 			entry.Timestamp, entry.Source, entry.Severity, entry.Message, entry.IPAddress, embedding,
 		)
-
 		if err != nil {
 			log.Printf("❌ Failed to insert log: %v", err)
-		} else {
-			log.Printf("📥 Ingested log: [%s] %s - %s", entry.Severity, entry.Source, entry.Message)
+			continue
 		}
+		id, _ := res.LastInsertId()
+		entry.ID = id
+
+		log.Printf("📥 Ingested log: [%s] %s - %s", entry.Severity, entry.Source, entry.Message)
+
+		// Broadcast to WebSocket clients
+		broadcastLog(entry)
 	}
 }
