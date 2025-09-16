@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Logs - 1L0Gx</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;700&family=Inter:wght@400;700;900&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+    <div class="app-container">
+        <aside class="sidebar">
+            <div class="logo-sidebar">
+                <img src="./logo.png" alt="1L0Gx Logo">
+                <span>1L0Gx</span>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="dashboard.html" class="nav-item">Dashboard</a>
+                <a href="incident.html" class="nav-item">Incidents</a>
+                <a href="logs.html" class="nav-item active">Logs</a>
+                <a href="actions.html" class="nav-item">Actions</a>
+            </nav>
+        </aside>
+        <div class="main-content">
+            <header class="app-header">
+                <div class="search-bar">
+                    <input type="text" placeholder="Search logs... e.g., severity:critical ip:103.1.2.3">
+                </div>
+                <div class="user-profile">
+                    <span>user@1l0gx.io</span>
+                    <img src="./user-avatar.png" alt="User Avatar">
+                </div>
+            </header>
+            <main class="app-main">
+                <h1 class="page-title">Logs</h1>
+                <div class="panel">
+                    <div class="panel-header">
+                        <h3 class="panel-title">Log Entries</h3>
+                        <div class="filters">
+                            <!-- Add filter controls here -->
+                        </div>
+                    </div>
+                    <div class="panel-body">
+                        <table id="log-table">
+                            <thead>
+                                <tr>
+                                    <th>Timestamp</th>
+                                    <th>Severity</th>
+                                    <th>Source</th>
+                                    <th>Message</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- Log rows will be injected here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const logTableBody = document.querySelector('#log-table tbody');
+
+            // Connect to Go WebSocket server
+            const socket = new WebSocket("ws://localhost:8080/ws");
+
+            socket.onopen = () => {
+                console.log("✅ Connected to WebSocket server");
+            };
+
+            socket.onmessage = (event) => {
+                try {
+                    const log = JSON.parse(event.data);
+
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                <td>${new Date(log.timestamp).toLocaleString()}</td>
+                <td><span class="severity ${log.severity.toLowerCase()}">${log.severity}</span></td>
+                <td>${log.source}</td>
+                <td>${log.message}</td>
+            `;
+                    logTableBody.prepend(row); // newest logs appear at top
+                } catch (err) {
+                    console.error("⚠️ Error parsing WebSocket message:", err);
+                }
+            };
+
+            socket.onclose = () => {
+                console.log("❌ WebSocket connection closed");
+            };
+
+            socket.onerror = (error) => {
+                console.error("⚠️ WebSocket error:", error);
+            };
+        });
+    </script>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
