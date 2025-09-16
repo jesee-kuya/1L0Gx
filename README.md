@@ -72,6 +72,30 @@ pip install -r requirements.txt
 # Run the agent
 # The agent will start polling for new incidents.
 python3 main.py
+
+#### Terminal 3: Frontend (Graphical Interface)
+
+To access the graphical interface:
+
+1.  **Open `frontend/index.html`:** Navigate to the `frontend` directory and open the `index.html` file directly in your web browser.
+
+    ```bash
+    # Example for Linux/macOS
+    open frontend/index.html
+    # Example for Windows
+    start frontend/index.html
+    ```
+
+2.  **(Optional) Use a Local HTTP Server:** If you encounter issues (e.g., due to browser security restrictions like CORS), you can serve the frontend using a simple HTTP server.
+
+    ```bash
+    # Navigate to the project root
+    cd /home/jkuya/1logx
+
+    # Using Python's http.server (if Python is installed)
+    python3 -m http.server 8000
+    # Then open your browser to http://localhost:8000/frontend/index.html
+    ```
 ```
 
 ##  workflow_state
