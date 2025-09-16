@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - 1L0Gx</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;700&family=Inter:wght@400;700;900&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+    <div class="app-container">
+        <aside class="sidebar">
+            <div class="logo-sidebar">
+                <img src="./logo.png" alt="1L0Gx Logo">
+                <span>1L0Gx</span>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="dashboard.html" class="nav-item active">Dashboard</a>
+                <a href="incident.html" class="nav-item">Incidents</a>
+                <a href="logs.html" class="nav-item">Logs</a>
+                <a href="actions.html" class="nav-item">Actions</a>
+            </nav>
+        </aside>
+        <div class="main-content">
+            <header class="app-header">
+                <div class="search-bar">
+                    <input type="text" placeholder="Search incidents, IPs, logs...">
+                </div>
+                <div class="user-profile">
+                    <span>user@1l0gx.io</span>
+                    <img src="./user-avatar.png" alt="User Avatar">
+                </div>
+            </header>
+            <main class="app-main">
+                <h1 class="page-title">Dashboard</h1>
+                <div class="dashboard-grid">
+                    <div class="stat-card">
+                        <h3>Total Logs Analyzed (24h)</h3>
+                        <p class="stat-value">1.2B</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Active Incidents</h3>
+                        <p class="stat-value">7</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Actions Taken (24h)</h3>
+                        <p class="stat-value">89</p>
+                    </div>
+
+                    <div class="panel live-feed">
+                        <h3 class="panel-title">Live Log Ingestion</h3>
+                        <div class="panel-body" id="log-feed">
+                            <script>
+                                document.addEventListener('DOMContentLoaded', function () {
+                                    const logTableBody = document.querySelector('#log-table tbody');
+                                    const logFeed = document.getElementById('log-feed');
+
+                                    // Connect to Go WebSocket server
+                                    const socket = new WebSocket("ws://localhost:8080/ws");
+
+                                    socket.onopen = () => {
+                                        console.log("✅ Connected to WebSocket server");
+                                    };
+
+                                    socket.onmessage = (event) => {
+                                        try {
+                                            const log = JSON.parse(event.data);
+
+                                            // --- Insert into Table ---
+                                            const row = document.createElement('tr');
+                                            row.innerHTML = `
+                <td>${new Date(log.timestamp).toLocaleString()}</td>
+                <td><span class="severity ${log.severity.toLowerCase()}">${log.severity}</span></td>
+                <td>${log.source}</td>
+                <td>${log.message}</td>
+            `;
+                                            logTableBody.prepend(row);
+
+                                            // --- Insert into Log Feed ---
+                                            const feedItem = document.createElement('div');
+                                            feedItem.classList.add('log-entry');
+                                            feedItem.innerHTML = `
+                <strong>[${log.severity}]</strong> ${log.source} - ${log.message}
+                <span class="timestamp">${new Date(log.timestamp).toLocaleTimeString()}</span>
+            `;
+                                            logFeed.prepend(feedItem);
+
+                                        } catch (err) {
+                                            console.error("⚠️ Error parsing WebSocket message:", err);
+                                        }
+                                    };
+
+                                    socket.onclose = () => {
+                                        console.log("❌ WebSocket connection closed");
+                                    };
+
+                                    socket.onerror = (error) => {
+                                        console.error("⚠️ WebSocket error:", error);
+                                    };
+                                });
+                            </script>
+
+                        </div>
+                    </div>
+
+                    <div class="panel incident-summary">
+                        <h3 class="panel-title">Active Incidents</h3>
+                        <div class="panel-body">
+                            <table id="incident-table">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Severity</th>
+                                        <th>Status</th>
+                                        <th>Timestamp</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- Incident rows will be injected here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            fetch('http://localhost:5001/api/incidents/all')
+                .then(response => response.json())
+                .then(data => {
+                    const incidentTableBody = document.querySelector('#incident-table tbody');
+                    data.forEach(incident => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td><a href="incident.html?id=${incident.id}">INC-${String(incident.id).padStart(5, '0')}</a></td>
+                            <td><span class="severity ${incident.severity.toLowerCase()}">${incident.severity}</span></td>
+                            <td><span class="status new">${incident.status}</span></td>
+                            <td>${new Date(incident.created_at).toLocaleString()}</td>
+                        `;
+                        incidentTableBody.appendChild(row);
+                    });
+                })
+                .catch(error => console.error('Error fetching incidents:', error));
+
+            fetch('http://localhost:5001/api/logs')
+                .then(response => response.json())
+                .then(data => {
+                    const logFeed = document.getElementById('log-feed');
+                    data.forEach(log => {
+                        const logEntry = document.createElement('pre');
+                        logEntry.className = 'log-entry';
+                        logEntry.innerHTML = `<span class="log-time">${new Date(log.timestamp).toLocaleTimeString()}</span> <span class="log-level ${log.severity.toLowerCase()}">[${log.severity}]</span> ${log.message}`;
+                        logFeed.appendChild(logEntry);
+                    });
+                })
+                .catch(error => console.error('Error fetching logs:', error));
+        });
+    </script>
+    <script src="script.js"></script>
+</body>
+
+</html>
