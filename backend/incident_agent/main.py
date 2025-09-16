@@ -3,9 +3,39 @@ import yaml
 import time
 import json
 import logging
+import asyncio
+import websockets
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# --- WebSocket Clients ---
+incident_clients = set()
+action_clients = set()
+
+async def incident_ws_handler(websocket):
+    incident_clients.add(websocket)
+    try:
+        async for _ in websocket:
+            pass
+    finally:
+        incident_clients.remove(websocket)
+
+async def action_ws_handler(websocket):
+    action_clients.add(websocket)
+    try:
+        async for _ in websocket:
+            pass
+    finally:
+        action_clients.remove(websocket)
+
+async def broadcast_incident(data):
+    if incident_clients:
+        await asyncio.gather(*[ws.send(json.dumps(data)) for ws in incident_clients])
+
+async def broadcast_action(data):
+    if action_clients:
+        await asyncio.gather(*[ws.send(json.dumps(data)) for ws in action_clients])
 
 # --- Load Config ---
 def load_config():
@@ -34,90 +64,37 @@ def get_db_connection(config):
         logging.error(f"Database connection failed: {e}")
         return None
 
-# --- LLM Analysis ---
+# --- Mock LLM Analysis ---
 def analyze_logs_with_llm(logs, config):
-    provider = config["llm"]["provider"]
-    api_key = config["llm"]["api_key"]
-    model = config["llm"]["model"]
-
-    if not api_key or api_key.startswith("YOUR_"):
-        logging.warning("⚠️ No valid LLM API key found. Using mock response.")
-        return {
-            "summary": "Mock analysis due to missing LLM configuration.",
-            "severity": "MEDIUM",
-            "recommendation": "Action: BLOCK_IP\nAction: CREATE_TICKET"
-        }
-
-    log_str = "\n".join(
-        [f"[{log['timestamp']}] [{log['source']}] [{log['severity']}] {log['message']}" for log in logs]
-    )
-    prompt = f"""
-You are a cybersecurity analyst.
-
-Logs:
-{log_str}
-
-Task:
-1. Summarize the incident in 2 sentences.
-2. Assign a severity (LOW, MEDIUM, HIGH, CRITICAL).
-3. Suggest recommended actions like \"Action: BLOCK_IP\", \"Action: SLACK_ALERT\", \"Action: CREATE_TICKET\".
-Return JSON only:
-{{\"summary\": \"...\", \"severity\": \"...\", \"recommendation\": \"...\"}}
-"""
-
-    messages = [
-        {"role": "system", "content": "You are a helpful cybersecurity analyst. Always return valid JSON."},
-        {"role": "user", "content": prompt},
-    ]
-
-    try:
-        if provider == "openai":
-            from openai import OpenAI
-            client = OpenAI(api_key=api_key)
-        elif provider == "groq":
-            from groq import Groq
-            client = Groq(api_key=api_key)
-        else:
-            logging.error(f"Unsupported LLM provider: {provider}")
-            return None
-
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            response_format={"type": "json_object"},
-        )
-        content = response.choices[0].message.content.strip()
-        if content.startswith("```"):
-            content = content.strip("`").replace("json", "").strip()
-        analysis = json.loads(content)
-        logging.info(f"🤖 LLM ({provider}) returned: {analysis}")
-        return analysis
-    except Exception as e:
-        logging.error(f"Error calling {provider} API: {e}")
+    if not logs:
         return None
 
+    # For hackathon demo, just return mock AI output
+    return {
+        "summary": f"Detected {len(logs)} related suspicious logs for IP {logs[0]['ip_address']}.",
+        "severity": "HIGH",
+        "recommendation": "Action: BLOCK_IP\nAction: SLACK_ALERT\nAction: CREATE_TICKET"
+    }
+
 # --- Incident Processing ---
-def process_incidents(conn, config):
+async def process_incidents(conn, config):
     cursor = conn.cursor(dictionary=True)
 
-    # 1. Find new CRITICAL/ALERT logs
     cursor.execute("""
         SELECT id, timestamp, source, severity, message, ip_address
         FROM logs
         WHERE processed = FALSE AND severity IN ('CRITICAL','ALERT')
         ORDER BY timestamp DESC
         LIMIT 1
-    """ )
+    """)
     trigger_log = cursor.fetchone()
 
     if not trigger_log:
-        logging.info("No new critical/alert logs.")
         cursor.close()
         return
 
     logging.info(f"🚨 Trigger log {trigger_log['id']}: {trigger_log['message']}")
 
-    # 2. Find related logs (same IP ±5 minutes)
     cursor.execute("""
         SELECT id, timestamp, source, severity, message, ip_address
         FROM logs
@@ -129,19 +106,14 @@ def process_incidents(conn, config):
 
     logging.info(f"📊 Found {len(related_logs)} related logs for IP {trigger_log['ip_address']}.")
 
-    # 3. Analyze with LLM
+    # Analyze with LLM
     analysis = analyze_logs_with_llm(related_logs, config)
     if not analysis:
         cursor.close()
         return
 
-    # Normalize recommendation: ensure it's always a string
-    recommendation = analysis.get("recommendation", "")
-    if isinstance(recommendation, list):
-        recommendation = "\n".join(recommendation)
-
+    recommendation = analysis["recommendation"]
     try:
-        # 4. Save new incident
         cursor.execute("""
             INSERT INTO incidents (log_ids, summary, severity, recommendation, status)
             VALUES (%s, %s, %s, %s, 'OPEN')
@@ -150,10 +122,19 @@ def process_incidents(conn, config):
         conn.commit()
         logging.info(f"📝 Incident {incident_id} created.")
 
-        # 5. Create & execute actions
-        process_actions(conn, incident_id, recommendation, trigger_log["ip_address"])
+        # Broadcast incident to frontend
+        await broadcast_incident({
+            "id": incident_id,
+            "summary": analysis["summary"],
+            "severity": analysis["severity"],
+            "recommendation": recommendation,
+            "logs": log_ids
+        })
 
-        # 6. Mark logs as processed
+        # Create & execute actions
+        await process_actions(conn, incident_id, recommendation, trigger_log["ip_address"])
+
+        # Mark logs processed
         if log_ids:
             placeholders = ",".join(["%s"] * len(log_ids))
             cursor.execute(f"UPDATE logs SET processed = TRUE WHERE id IN ({placeholders})", tuple(log_ids))
@@ -167,7 +148,7 @@ def process_incidents(conn, config):
         cursor.close()
 
 # --- Action Execution ---
-def process_actions(conn, incident_id, recommendation_text, ip_address):
+async def process_actions(conn, incident_id, recommendation_text, ip_address):
     cursor = conn.cursor()
     for line in recommendation_text.splitlines():
         if "Action:" in line:
@@ -184,36 +165,43 @@ def process_actions(conn, incident_id, recommendation_text, ip_address):
 
                 # Simulate execution
                 logging.info(f"--- Executing {action_type} ---")
-                if action_type == "BLOCK_IP":
-                    logging.info(f"   -> Blocking {ip_address} in firewall (simulated).")
-                elif action_type == "SLACK_ALERT":
-                    logging.info("   -> Sending alert to Slack (simulated).")
-                elif action_type == "CREATE_TICKET":
-                    logging.info("   -> Creating Jira ticket (simulated).")
-
                 cursor.execute("UPDATE actions SET status='SUCCESS', executed_at=NOW() WHERE id=%s", (action_id,))
                 conn.commit()
                 logging.info(f"✅ Action {action_id} marked SUCCESS")
+
+                # Broadcast action to frontend
+                await broadcast_action({
+                    "id": action_id,
+                    "incident_id": incident_id,
+                    "type": action_type,
+                    "status": "SUCCESS",
+                    "details": details
+                })
+
             except Exception as e:
                 logging.error(f"Failed to execute action {action_type}: {e}")
                 conn.rollback()
     cursor.close()
 
-# --- Main ---
-if __name__ == "__main__":
-    config = load_config()
+# --- Main Loop ---
+async def main_loop(config):
     conn = get_db_connection(config)
     if not conn:
-        exit(1)
+        return
+    while True:
+        await process_incidents(conn, config)
+        await asyncio.sleep(10)
 
-    logging.info("🚀 1L0Gx Incident Agent running. Polling every 10s...")
-    try:
-        while True:
-            process_incidents(conn, config)
-            time.sleep(10)
-    except KeyboardInterrupt:
-        logging.info("👋 Agent stopped by user.")
-    finally:
-        if conn.is_connected():
-            conn.close()
-            logging.info("🔒 DB connection closed.")
+async def start_server(config):
+    ws_incidents = websockets.serve(incident_ws_handler, "0.0.0.0", 8765, ping_interval=None)
+    ws_actions = websockets.serve(action_ws_handler, "0.0.0.0", 8766, ping_interval=None)
+
+    await asyncio.gather(
+        ws_incidents,
+        ws_actions,
+        main_loop(config)
+    )
+
+if __name__ == "__main__":
+    config = load_config()
+    asyncio.run(start_server(config))
