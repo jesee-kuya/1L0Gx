@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Incident Details - 1L0Gx</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;700&family=Inter:wght@400;700;900&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+    <div class="app-container">
+        <aside class="sidebar">
+            <div class="logo-sidebar">
+                <img src="./logo.png" alt="1L0Gx Logo">
+                <span>1L0Gx</span>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="dashboard.html" class="nav-item">Dashboard</a>
+                <a href="incident.html" class="nav-item active">Incidents</a>
+                <a href="logs.html" class="nav-item">Logs</a>
+                <a href="actions.html" class="nav-item">Actions</a>
+            </nav>
+        </aside>
+        <div class="main-content">
+            <header class="app-header">
+                <div class="search-bar">
+                    <input type="text" placeholder="Search incidents, IPs, logs...">
+                </div>
+                <div class="user-profile">
+                    <span>user@1l0gx.io</span>
+                    <img src="./user-avatar.png" alt="User Avatar">
+                </div>
+            </header>
+            <main class="app-main">
+                <div class="incident-header">
+                    <h1 class="page-title" id="incident-title"></h1>
+                    <div class="incident-actions">
+                        <button class="btn btn-secondary">Block IP</button>
+                        <button class="btn btn-secondary">Slack Alert</button>
+                        <button class="btn btn-primary">Create Ticket</button>
+                    </div>
+                </div>
+                <div class="incident-details-grid">
+                    <div class="panel incident-summary-panel">
+                        <h3 class="panel-title">AI Summary</h3>
+                        <div class="panel-body" id="incident-summary">
+                        </div>
+                    </div>
+                    <div class="panel incident-meta-panel">
+                        <h3 class="panel-title">Details</h3>
+                        <div class="panel-body" id="incident-details">
+                        </div>
+                    </div>
+                    <div class="panel recommendations-panel">
+                        <h3 class="panel-title">AI Recommendations</h3>
+                        <div class="panel-body" id="incident-recommendations">
+                        </div>
+                    </div>
+                    <div class="panel related-logs-panel">
+                        <h3 class="panel-title">Related Logs</h3>
+                        <div class="panel-body" id="related-logs">
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const urlParams = new URLSearchParams(window.location.search);
+            const incidentId = urlParams.get('id');
+
+            // --- Initial fetch of incident details ---
+            if (incidentId) {
+                fetch(`http://localhost:5001/api/incidents/${incidentId}`)
+                    .then(response => response.json())
+                    .then(data => renderIncident(data))
+                    .catch(error => console.error('Error fetching incident details:', error));
+            }
+
+            // --- Live updates via WebSocket ---
+            const incidentSocket = new WebSocket("ws://localhost:8765");
+
+            incidentSocket.onopen = () => {
+                console.log("✅ Connected to Incidents WebSocket");
+            };
+
+            incidentSocket.onmessage = (event) => {
+                try {
+                    const incident = JSON.parse(event.data);
+
+                    // If user is viewing this incident, update details
+                    if (incidentId && String(incident.id) === incidentId) {
+                        console.log("🔄 Updating live incident:", incident);
+                        renderIncident(incident, true);
+                    }
+
+                    // Or, if on a list page, you could append it instead
+                } catch (err) {
+                    console.error("⚠️ Error parsing incident WebSocket message:", err);
+                }
+            };
+
+            incidentSocket.onclose = () => {
+                console.log("❌ Incidents WebSocket closed");
+            };
+
+            incidentSocket.onerror = (error) => {
+                console.error("⚠️ WebSocket error:", error);
+            };
+
+            // --- Helper: render incident into the DOM ---
+            function renderIncident(data, liveUpdate = false) {
+                document.getElementById('incident-title').textContent =
+                    `Incident INC-${String(data.id).padStart(5, '0')}: ${data.summary}`;
+                document.getElementById('incident-summary').innerHTML = `<p>${data.summary}</p>`;
+                document.getElementById('incident-details').innerHTML = `
+            <p><strong>Severity:</strong> <span class="severity ${data.severity.toLowerCase()}">${data.severity}</span></p>
+            <p><strong>Status:</strong> <span class="status ${data.status ? data.status.toLowerCase() : 'new'}">${data.status || 'OPEN'}</span></p>
+            <p><strong>Detected:</strong> ${new Date(data.created_at || Date.now()).toLocaleString()}</p>
+        `;
+                document.getElementById('incident-recommendations').innerHTML =
+                    `<ul>${data.recommendation.split('\n').map(rec => `<li>${rec}</li>`).join('')}</ul>`;
+
+                // Render related logs (only refresh if new/live)
+                const relatedLogs = document.getElementById('related-logs');
+                if (liveUpdate) relatedLogs.innerHTML = "";
+                if (data.logs) {
+                    data.logs.forEach(log => {
+                        const logEntry = document.createElement('pre');
+                        logEntry.className = 'log-entry';
+                        logEntry.innerHTML = `
+                    <span class="log-time">${new Date(log.timestamp).toLocaleTimeString()}</span>
+                    <span class="log-level ${log.severity.toLowerCase()}">[${log.severity}]</span>
+                    ${log.message}
+                `;
+                        relatedLogs.appendChild(logEntry);
+                    });
+                }
+            }
+        });
+    </script>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
