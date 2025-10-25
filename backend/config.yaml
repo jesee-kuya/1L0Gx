@@ -1,13 +1,16 @@
-# 1L0Gx Configuration
+# 1L0Gx Configuration (sample)
+# NOTE: Prefer configuring via environment variables in production:
+#   TIDB_HOST, TIDB_PORT, TIDB_USER, TIDB_PASSWORD, TIDB_DATABASE
+#   LLM_PROVIDER, LLM_API_KEY, LLM_MODEL
 
 tidb:
-  host: "gateway01.eu-central-1.prod.aws.tidbcloud.com"
+  host: "localhost"       # or your TiDB host
   port: 4000
-  user: "48my6JA2ujJdGUZ.root"
-  password: "2qNROfnjvaeZDEmv"
+  user: "root"
+  password: "changeme"
   database: "test"
 
 llm:
   provider: "groq"
-  api_key: "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"
+  api_key: ""
   model: "llama-3.1-8b-instant"

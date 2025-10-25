@@ -78,7 +78,7 @@
                 .catch(error => console.error('Error fetching actions:', error));
 
             // --- Live updates via WebSocket ---
-            const actionSocket = new WebSocket("ws://localhost:8766");
+            const actionSocket = new WebSocket("ws://localhost:5001/ws/actions");
 
             actionSocket.onopen = () => {
                 console.log("✅ Connected to Actions WebSocket");

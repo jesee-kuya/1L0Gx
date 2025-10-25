@@ -1,53 +1,119 @@
+import os
 import mysql.connector
 import yaml
 import time
 import json
 import logging
 import asyncio
-import websockets
+from typing import Any, Dict, List, Optional, Set
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# --- WebSocket Clients ---
-incident_clients = set()
-action_clients = set()
+# --- FastAPI App & WebSocket Hubs ---
+app = FastAPI(title="1L0Gx Incident Agent")
 
-async def incident_ws_handler(websocket):
-    incident_clients.add(websocket)
+# Allow frontend files to call the API from localhost
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+incident_ws_clients: Set[WebSocket] = set()
+action_ws_clients: Set[WebSocket] = set()
+
+
+@app.websocket("/ws/incidents")
+async def ws_incidents(websocket: WebSocket):
+    await websocket.accept()
+    incident_ws_clients.add(websocket)
     try:
-        async for _ in websocket:
-            pass
+        while True:
+            # Keep connection alive; clients usually don't send messages
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
     finally:
-        incident_clients.remove(websocket)
+        incident_ws_clients.discard(websocket)
 
-async def action_ws_handler(websocket):
-    action_clients.add(websocket)
+
+@app.websocket("/ws/actions")
+async def ws_actions(websocket: WebSocket):
+    await websocket.accept()
+    action_ws_clients.add(websocket)
     try:
-        async for _ in websocket:
-            pass
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
     finally:
-        action_clients.remove(websocket)
+        action_ws_clients.discard(websocket)
 
-async def broadcast_incident(data):
-    if incident_clients:
-        await asyncio.gather(*[ws.send(json.dumps(data)) for ws in incident_clients])
 
-async def broadcast_action(data):
-    if action_clients:
-        await asyncio.gather(*[ws.send(json.dumps(data)) for ws in action_clients])
+async def broadcast_incident(data: Dict[str, Any]):
+    if not incident_ws_clients:
+        return
+    message = json.dumps(data, default=str)
+    to_remove: List[WebSocket] = []
+    for ws in list(incident_ws_clients):
+        try:
+            await ws.send_text(message)
+        except Exception:
+            to_remove.append(ws)
+    for ws in to_remove:
+        incident_ws_clients.discard(ws)
+
+
+async def broadcast_action(data: Dict[str, Any]):
+    if not action_ws_clients:
+        return
+    message = json.dumps(data, default=str)
+    to_remove: List[WebSocket] = []
+    for ws in list(action_ws_clients):
+        try:
+            await ws.send_text(message)
+        except Exception:
+            to_remove.append(ws)
+    for ws in to_remove:
+        action_ws_clients.discard(ws)
 
 # --- Load Config ---
-def load_config():
+def load_config() -> Dict[str, Any]:
+    """Load config from YAML and environment variables (env takes precedence)."""
     try:
         with open("../config.yaml", "r") as f:
-            return yaml.safe_load(f)
+            cfg = yaml.safe_load(f) or {}
     except FileNotFoundError:
-        logging.error("config.yaml not found.")
-        exit(1)
+        logging.warning("config.yaml not found; using environment variables only.")
+        cfg = {}
+
+    # Overlay with environment variables if present
+    cfg.setdefault("tidb", {})
+    cfg["tidb"]["host"] = os.getenv("TIDB_HOST", cfg["tidb"].get("host"))
+    cfg["tidb"]["port"] = int(os.getenv("TIDB_PORT", cfg["tidb"].get("port", 4000)))
+    cfg["tidb"]["user"] = os.getenv("TIDB_USER", cfg["tidb"].get("user"))
+    cfg["tidb"]["password"] = os.getenv("TIDB_PASSWORD", cfg["tidb"].get("password"))
+    cfg["tidb"]["database"] = os.getenv("TIDB_DATABASE", cfg["tidb"].get("database"))
+
+    cfg.setdefault("llm", {})
+    cfg["llm"]["provider"] = os.getenv("LLM_PROVIDER", cfg["llm"].get("provider"))
+    cfg["llm"]["api_key"] = os.getenv("LLM_API_KEY", cfg["llm"].get("api_key"))
+    cfg["llm"]["model"] = os.getenv("LLM_MODEL", cfg["llm"].get("model"))
+
+    missing = [k for k in ("host", "port", "user", "password", "database") if not cfg["tidb"].get(k)]
+    if missing:
+        logging.warning(f"TiDB config incomplete or missing keys: {missing}")
+    return cfg
 
 # --- Database Connection ---
-def get_db_connection(config):
+def get_db_connection(config: Dict[str, Any]):
     try:
         conn = mysql.connector.connect(
             host=config["tidb"]["host"],
@@ -128,7 +194,9 @@ async def process_incidents(conn, config):
             "summary": analysis["summary"],
             "severity": analysis["severity"],
             "recommendation": recommendation,
-            "logs": log_ids
+            "status": "OPEN",
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "logs": related_logs,  # send full log objects for UI rendering
         })
 
         # Create & execute actions
@@ -175,7 +243,8 @@ async def process_actions(conn, incident_id, recommendation_text, ip_address):
                     "incident_id": incident_id,
                     "type": action_type,
                     "status": "SUCCESS",
-                    "details": details
+                    "details": details,
+                    "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 })
 
             except Exception as e:
@@ -187,21 +256,167 @@ async def process_actions(conn, incident_id, recommendation_text, ip_address):
 async def main_loop(config):
     conn = get_db_connection(config)
     if not conn:
+        logging.error("Incident processor not started; DB connection unavailable.")
         return
     while True:
-        await process_incidents(conn, config)
+        try:
+            await process_incidents(conn, config)
+        except Exception as e:
+            logging.error(f"Error in incident loop: {e}")
+            # Attempt to reconnect on failure
+            try:
+                conn.close()
+            except Exception:
+                pass
+            await asyncio.sleep(2)
+            conn = get_db_connection(config)
         await asyncio.sleep(10)
 
-async def start_server(config):
-    ws_incidents = websockets.serve(incident_ws_handler, "0.0.0.0", 8765, ping_interval=None)
-    ws_actions = websockets.serve(action_ws_handler, "0.0.0.0", 8766, ping_interval=None)
 
-    await asyncio.gather(
-        ws_incidents,
-        ws_actions,
-        main_loop(config)
-    )
+# --- REST API Endpoints ---
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/api/incidents/all")
+def list_incidents():
+    config = app.state.config
+    conn = get_db_connection(config)
+    if not conn:
+        return []
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT id, severity, status, created_at
+            FROM incidents
+            ORDER BY created_at DESC
+            LIMIT 200
+        """)
+        rows = cursor.fetchall()
+        return rows
+    finally:
+        try:
+            cursor.close()
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/incidents/{incident_id}")
+def get_incident(incident_id: int):
+    config = app.state.config
+    conn = get_db_connection(config)
+    if not conn:
+        return {"error": "db_unavailable"}
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT id, log_ids, summary, severity, recommendation, status, created_at FROM incidents WHERE id=%s",
+            (incident_id,),
+        )
+        inc = cursor.fetchone()
+        if not inc:
+            return {"error": "not_found"}
+
+        log_ids = []
+        try:
+            if inc.get("log_ids"):
+                log_ids = json.loads(inc["log_ids"]) if isinstance(inc["log_ids"], str) else inc["log_ids"]
+        except Exception:
+            log_ids = []
+
+        logs: List[Dict[str, Any]] = []
+        if log_ids:
+            placeholders = ",".join(["%s"] * len(log_ids))
+            cursor.execute(
+                f"SELECT id, timestamp, source, severity, message, ip_address FROM logs WHERE id IN ({placeholders}) ORDER BY timestamp DESC",
+                tuple(log_ids),
+            )
+            logs = cursor.fetchall()
+
+        return {
+            "id": inc["id"],
+            "summary": inc["summary"],
+            "severity": inc["severity"],
+            "recommendation": inc["recommendation"],
+            "status": inc["status"],
+            "created_at": inc["created_at"],
+            "logs": logs,
+        }
+    finally:
+        try:
+            cursor.close()
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/logs")
+def list_logs(limit: int = 100):
+    config = app.state.config
+    conn = get_db_connection(config)
+    if not conn:
+        return []
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT id, timestamp, source, severity, message, ip_address FROM logs ORDER BY timestamp DESC LIMIT %s",
+            (limit,),
+        )
+        return cursor.fetchall()
+    finally:
+        try:
+            cursor.close()
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/actions")
+def list_actions(limit: int = 200):
+    config = app.state.config
+    conn = get_db_connection(config)
+    if not conn:
+        return []
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT id, incident_id, action_type, details, status, created_at, executed_at FROM actions ORDER BY created_at DESC LIMIT %s",
+            (limit,),
+        )
+        rows = cursor.fetchall()
+        # Ensure details is JSON object, not string
+        for r in rows:
+            try:
+                if isinstance(r.get("details"), str):
+                    r["details"] = json.loads(r["details"])  # may raise
+            except Exception:
+                pass
+        return rows
+    finally:
+        try:
+            cursor.close()
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.on_event("startup")
+async def on_startup():
+    # Load configuration and start background processor
+    app.state.config = load_config()
+    asyncio.create_task(main_loop(app.state.config))
+
+
+def run():
+    port_str = os.getenv("PORT") or os.getenv("API_PORT") or "5001"
+    try:
+        port = int(port_str)
+    except ValueError:
+        port = 5001
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+
 
 if __name__ == "__main__":
-    config = load_config()
-    asyncio.run(start_server(config))
+    run()
