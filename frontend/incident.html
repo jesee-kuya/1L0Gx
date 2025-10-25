@@ -85,7 +85,7 @@
             }
 
             // --- Live updates via WebSocket ---
-            const incidentSocket = new WebSocket("ws://localhost:8765");
+            const incidentSocket = new WebSocket("ws://localhost:5001/ws/incidents");
 
             incidentSocket.onopen = () => {
                 console.log("✅ Connected to Incidents WebSocket");
@@ -125,13 +125,15 @@
             <p><strong>Status:</strong> <span class="status ${data.status ? data.status.toLowerCase() : 'new'}">${data.status || 'OPEN'}</span></p>
             <p><strong>Detected:</strong> ${new Date(data.created_at || Date.now()).toLocaleString()}</p>
         `;
-                document.getElementById('incident-recommendations').innerHTML =
-                    `<ul>${data.recommendation.split('\n').map(rec => `<li>${rec}</li>`).join('')}</ul>`;
+                if (data.recommendation) {
+                    document.getElementById('incident-recommendations').innerHTML =
+                        `<ul>${data.recommendation.split('\n').map(rec => `<li>${rec}</li>`).join('')}</ul>`;
+                }
 
                 // Render related logs (only refresh if new/live)
                 const relatedLogs = document.getElementById('related-logs');
                 if (liveUpdate) relatedLogs.innerHTML = "";
-                if (data.logs) {
+                if (data.logs && Array.isArray(data.logs)) {
                     data.logs.forEach(log => {
                         const logEntry = document.createElement('pre');
                         logEntry.className = 'log-entry';

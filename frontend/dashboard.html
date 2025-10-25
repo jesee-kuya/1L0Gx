@@ -73,14 +73,16 @@
                                             const log = JSON.parse(event.data);
 
                                             // --- Insert into Table ---
-                                            const row = document.createElement('tr');
-                                            row.innerHTML = `
-                <td>${new Date(log.timestamp).toLocaleString()}</td>
-                <td><span class="severity ${log.severity.toLowerCase()}">${log.severity}</span></td>
-                <td>${log.source}</td>
-                <td>${log.message}</td>
-            `;
-                                            logTableBody.prepend(row);
+                                            if (logTableBody) {
+                                                const row = document.createElement('tr');
+                                                row.innerHTML = `
+                    <td>${new Date(log.timestamp).toLocaleString()}</td>
+                    <td><span class="severity ${log.severity.toLowerCase()}">${log.severity}</span></td>
+                    <td>${log.source}</td>
+                    <td>${log.message}</td>
+                `;
+                                                logTableBody.prepend(row);
+                                            }
 
                                             // --- Insert into Log Feed ---
                                             const feedItem = document.createElement('div');
